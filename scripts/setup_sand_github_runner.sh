@@ -3,6 +3,8 @@ set -euo pipefail
 
 readonly DEFAULT_RUNNER_GROUP="mobile-sandbox"
 readonly DEFAULT_RUNNER_LABEL="mobile-sandbox"
+readonly DEFAULT_SAND_SOURCE_REPOSITORY="https://github.com/Stacked-Technology/sand.git"
+readonly DEFAULT_SAND_REVISION="7e952d121a706626e8927d0ba05195a3802961f2"
 readonly DEFAULT_CONFIG_PATH="$HOME/.config/sand/mobile-runner.yml"
 readonly DEFAULT_LAUNCH_AGENT_PATH="$HOME/Library/LaunchAgents/com.local.sand.mobile-runner.plist"
 readonly DEFAULT_LAUNCH_AGENT_LABEL="com.local.sand.mobile-runner"
@@ -18,8 +20,12 @@ REPOSITORY="${SAND_GITHUB_REPOSITORY:-}"
 APP_ID="${SAND_GITHUB_APP_ID:-}"
 KEY_PATH="${SAND_GITHUB_APP_KEY_PATH:-$HOME/.config/sand/github-app.pem}"
 VM_IMAGE="${SAND_VM_IMAGE:-}"
-SAND_REVISION="${SAND_REVISION:-}"
+SAND_SOURCE_REPOSITORY_WAS_SET="${SAND_SOURCE_REPOSITORY+x}"
+SAND_REVISION_WAS_SET="${SAND_REVISION+x}"
+SAND_REVISION="${SAND_REVISION:-$DEFAULT_SAND_REVISION}"
+SAND_SOURCE_REPOSITORY="${SAND_SOURCE_REPOSITORY:-$DEFAULT_SAND_SOURCE_REPOSITORY}"
 RUNNER_GROUP="${SAND_RUNNER_GROUP:-$DEFAULT_RUNNER_GROUP}"
+RUNNER_GROUP_CONFIRM="${SAND_RUNNER_GROUP_CONFIRM:-}"
 RUNNER_LABEL="${SAND_RUNNER_LABEL:-$DEFAULT_RUNNER_LABEL}"
 RUNNER_NAME="${SAND_RUNNER_NAME:-}"
 BASE_BRANCH="${SAND_BASE_BRANCH:-main}"
@@ -31,9 +37,14 @@ POOL_MAX="${SAND_POOL_MAX:-2}"
 POOL_POLL_INTERVAL="${SAND_POOL_POLL_INTERVAL:-30}"
 CONFIG_PATH="${SAND_CONFIG_PATH:-$DEFAULT_CONFIG_PATH}"
 LAUNCH_AGENT_PATH="${SAND_LAUNCH_AGENT_PATH:-$DEFAULT_LAUNCH_AGENT_PATH}"
-SAND_BIN="${SAND_BIN:-$HOME/.local/bin/sand}"
+SAND_INSTALL_PATH="${SAND_INSTALL_PATH:-}"
+SAND_BIN="${SAND_BIN:-${SAND_INSTALL_PATH:-$HOME/.local/bin/sand}}"
 MANAGED_LOGS_RECREATED=false
 GITHUB_SNAPSHOT_DIRECTORY=""
+GITHUB_MUTATION_ACTIVE=false
+GITHUB_MUTATION_GROUP_ID=""
+GITHUB_GROUP_ETAG=""
+GITHUB_REPOSITORIES_ETAG=""
 
 usage() {
   cat <<'EOF'
@@ -50,10 +61,12 @@ the literal second argument --apply.
 
 Required environment for validate/configure/install:
   SAND_GITHUB_ORGANIZATION  SAND_GITHUB_REPOSITORY  SAND_GITHUB_APP_ID
-  SAND_VM_IMAGE              SAND_REVISION
+  SAND_VM_IMAGE
 
 Useful overrides:
-  SAND_GITHUB_APP_KEY_PATH  SAND_RUNNER_GROUP       SAND_RUNNER_LABEL
+  SAND_GITHUB_APP_KEY_PATH  SAND_REVISION           SAND_RUNNER_GROUP
+  SAND_SOURCE_REPOSITORY    SAND_INSTALL_PATH       SAND_RUNNER_LABEL
+  SAND_RUNNER_GROUP_CONFIRM
   SAND_RUNNER_NAME          SAND_BASE_BRANCH        SAND_ALLOWED_WORKFLOWS
   SAND_VM_RAM_GB            SAND_VM_CPU_CORES       SAND_POOL_MIN
   SAND_POOL_MAX             SAND_POOL_POLL_INTERVAL SAND_CONFIG_PATH
@@ -70,6 +83,11 @@ require_macos_host() {
   [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] ||
     fail "Sand requires an Apple Silicon macOS host."
   [[ "$(id -u)" != "0" ]] || fail "Run Sand as the normal runner user, not root."
+  local macos_version macos_major
+  macos_version="$(sw_vers -productVersion 2>/dev/null || true)"
+  macos_major="${macos_version%%.*}"
+  [[ "$macos_major" =~ ^[0-9]+$ ]] && (( macos_major >= 15 )) ||
+    fail "the pinned Sand fork requires macOS 15 or newer; detected: ${macos_version:-unknown}."
 }
 
 positive_integer() {
@@ -80,8 +98,40 @@ non_negative_integer() {
   [[ "$2" =~ ^[0-9]+$ ]] || fail "$1 must be a non-negative integer."
 }
 
+validate_source_overrides() {
+  [[ "$SAND_SOURCE_REPOSITORY_WAS_SET" == "$SAND_REVISION_WAS_SET" ]] ||
+    fail "set SAND_SOURCE_REPOSITORY and SAND_REVISION together; both are pinned as one source selection."
+}
+
+validate_plan_inputs() {
+  local repository_owner
+  validate_source_overrides
+  [[ "$SAND_SOURCE_REPOSITORY" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$ ]] ||
+    fail "SAND_SOURCE_REPOSITORY must be an HTTPS GitHub repository URL."
+  [[ "$SAND_REVISION" =~ ^[0-9a-f]{40}$ ]] ||
+    fail "SAND_REVISION must be a full lowercase commit SHA."
+  [[ -z "$SAND_INSTALL_PATH" || "$SAND_INSTALL_PATH" == "$SAND_BIN" ]] ||
+    fail "SAND_INSTALL_PATH and SAND_BIN must refer to the same path."
+  if [[ -n "$ORGANIZATION" || -n "$REPOSITORY" ]]; then
+    [[ "$ORGANIZATION" =~ ^[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_ORGANIZATION is invalid."
+    [[ "$REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_REPOSITORY must have the form OWNER/REPOSITORY."
+    repository_owner="$(printf '%s\n' "$REPOSITORY" | cut -d/ -f1)"
+    [[ "$repository_owner" == "$ORGANIZATION" ]] || fail "repository owner must match SAND_GITHUB_ORGANIZATION."
+  fi
+  if [[ -n "$APP_ID" ]]; then
+    positive_integer SAND_GITHUB_APP_ID "$APP_ID"
+  fi
+  if [[ -n "$VM_IMAGE" ]]; then
+    [[ "$VM_IMAGE" =~ ^[A-Za-z0-9._/@:-]+@sha256:[0-9a-f]{64}$ ]] || fail "SAND_VM_IMAGE must end with an exact sha256 digest."
+  fi
+  if [[ -n "$RUNNER_NAME" ]]; then
+    [[ "$RUNNER_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || fail "SAND_RUNNER_NAME is invalid."
+  fi
+}
+
 validate_inputs() {
   local path_value workflow
+  validate_plan_inputs
   [[ "$ORGANIZATION" =~ ^[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_ORGANIZATION is missing or invalid."
   [[ "$REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_REPOSITORY must have the form OWNER/REPOSITORY."
   [[ "${REPOSITORY%%/*}" == "$ORGANIZATION" ]] || fail "repository owner must match SAND_GITHUB_ORGANIZATION."
@@ -100,8 +150,9 @@ validate_inputs() {
   [[ "$RUNNER_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || fail "set SAND_RUNNER_NAME to an explicit opaque runner name."
   [[ "$VM_IMAGE" =~ ^[A-Za-z0-9._/@:-]+@sha256:[0-9a-f]{64}$ ]] || fail "SAND_VM_IMAGE must end with an exact sha256 digest."
   [[ "$SAND_REVISION" =~ ^[0-9a-f]{40}$ ]] || fail "SAND_REVISION must be a full lowercase commit SHA."
-  for path_value in "$KEY_PATH" "$CONFIG_PATH" "$LAUNCH_AGENT_PATH" "$SAND_BIN"; do
+  for path_value in "$KEY_PATH" "$CONFIG_PATH" "$LAUNCH_AGENT_PATH" "$SAND_BIN" "$DEFAULT_LOG_PATH" "$DEFAULT_STDOUT_PATH" "$DEFAULT_STDERR_PATH"; do
     [[ "$path_value" == /* && "$path_value" =~ ^[A-Za-z0-9_./\ -]+$ ]] || fail "path must be absolute and contain only supported characters: $path_value"
+    reject_symlinked_ancestors "$path_value"
   done
   [[ "$WORKFLOWS" != *[$'\n\r']* ]] || fail "SAND_ALLOWED_WORKFLOWS contains a newline."
   IFS=',' read -r -a workflow_list <<< "$WORKFLOWS"
@@ -113,9 +164,44 @@ validate_inputs() {
 
 require_commands() {
   local command_name
-  for command_name in gh jq plutil launchctl shasum install; do
+  for command_name in gh jq plutil launchctl shasum install tart softnet sshpass ssh; do
     command -v "$command_name" >/dev/null || fail "missing required command: $command_name"
   done
+}
+
+version_at_least() {
+  local actual="$1" required="$2"
+  local actual_major actual_minor actual_patch required_major required_minor required_patch version_part
+  IFS='.' read -r actual_major actual_minor actual_patch _ <<< "$actual"
+  IFS='.' read -r required_major required_minor required_patch _ <<< "$required"
+  for version_part in "$actual_major" "$actual_minor" "$actual_patch" "$required_major" "$required_minor" "$required_patch"; do
+    [[ "$version_part" =~ ^[0-9]+$ ]] || return 1
+  done
+  (( actual_major > required_major ||
+    (actual_major == required_major && actual_minor > required_minor) ||
+    (actual_major == required_major && actual_minor == required_minor && actual_patch >= required_patch) ))
+}
+
+require_tart_version() {
+  local tart_version
+  tart_version="$(tart --version 2>/dev/null | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1)"
+  [[ -n "$tart_version" ]] && version_at_least "$tart_version" "2.34.0" ||
+    fail "Tart 2.34.0 or newer is required; detected: ${tart_version:-unknown}."
+}
+
+require_softnet_version() {
+  local detected_version=""
+  if command -v brew >/dev/null 2>&1; then
+    detected_version="$(HOMEBREW_NO_AUTO_UPDATE=1 brew list --versions softnet 2>/dev/null | awk '{print $2}')"
+  fi
+  if [[ -z "$detected_version" ]]; then
+    detected_version="$(softnet --version 2>/dev/null | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1 || true)"
+  fi
+  if [[ -z "$detected_version" ]]; then
+    detected_version="$(softnet version 2>/dev/null | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1 || true)"
+  fi
+  [[ -n "$detected_version" ]] && version_at_least "$detected_version" "0.21.0" ||
+    fail "Softnet 0.21.0 or newer is required; install a release that exposes its version or use the Homebrew package metadata check."
 }
 
 file_owner() {
@@ -126,6 +212,24 @@ file_mode() {
   stat -f '%Lp' "$1"
 }
 
+reject_symlinked_ancestors() {
+  local path_value="$1" parent
+  parent="$(dirname "$path_value")"
+  while [[ "$parent" != "/" ]]; do
+    [[ ! -L "$parent" || "$parent" == "/var" || "$parent" == "/tmp" ]] ||
+      fail "path has a symlinked parent: $parent"
+    parent="$(dirname "$parent")"
+  done
+}
+
+require_secure_parent_directory() {
+  local target_path="$1" parent
+  parent="$(dirname "$target_path")"
+  [[ -d "$parent" && ! -L "$parent" ]] || fail "managed path parent is missing or symlinked: $parent"
+  [[ "$(file_owner "$parent")" == "$(id -u)" ]] || fail "managed path parent must be owned by the runner user: $parent"
+  [[ "$((8#$(file_mode "$parent") & 8#022))" == 0 ]] || fail "managed path parent must not be group/world writable: $parent"
+}
+
 require_key() {
   [[ -f "$KEY_PATH" && ! -L "$KEY_PATH" ]] || fail "GitHub App private key is missing or symlinked: $KEY_PATH"
   [[ "$(file_mode "$KEY_PATH")" == "600" || "$(file_mode "$KEY_PATH")" == "400" ]] || fail "GitHub App private key must have mode 600 or 400."
@@ -133,15 +237,15 @@ require_key() {
 }
 
 require_pinned_sand() {
-  local provenance_path="${SAND_BIN}.provenance" recorded_revision recorded_sha actual_sha extra
+  local provenance_path="${SAND_BIN}.provenance" recorded_revision recorded_sha recorded_source recorded_resolved recorded_toolchain actual_sha extra
   [[ -f "$SAND_BIN" && ! -L "$SAND_BIN" && -x "$SAND_BIN" ]] || fail "Sand binary is missing or not executable: $SAND_BIN"
   [[ -f "$provenance_path" && ! -L "$provenance_path" ]] || fail "Sand provenance is missing: $provenance_path"
   [[ "$(file_owner "$SAND_BIN")" == "$(id -u)" ]] || fail "Sand binary must be owned by the runner user."
   [[ "$(file_mode "$provenance_path")" =~ ^[0-9]+$ ]] || fail "Sand provenance permissions are invalid."
   (( (8#$(file_mode "$provenance_path") & 8#022) == 0 )) || fail "Sand provenance must not be group/world writable."
   [[ "$(wc -l < "$provenance_path" | tr -d '[:space:]')" == "1" ]] || fail "Sand provenance must contain exactly one record."
-  IFS=' ' read -r recorded_revision recorded_sha extra < "$provenance_path"
-  [[ -z "${extra:-}" && "$recorded_revision" == "$SAND_REVISION" && "$recorded_sha" =~ ^[0-9a-f]{64}$ ]] || fail "Sand provenance does not match the pinned revision."
+  IFS=' ' read -r recorded_revision recorded_sha recorded_source recorded_resolved recorded_toolchain extra < "$provenance_path"
+  [[ -z "${extra:-}" && "$recorded_revision" == "$SAND_REVISION" && "$recorded_sha" =~ ^[0-9a-f]{64}$ && "$recorded_source" == "source=$SAND_SOURCE_REPOSITORY" && "$recorded_resolved" =~ ^resolved_sha256=[0-9a-f]{64}$ && "$recorded_toolchain" =~ ^toolchain_sha256=[0-9a-f]{64}$ ]] || fail "Sand provenance does not match the pinned source, revision, or build inputs."
   actual_sha="$(shasum -a 256 "$SAND_BIN")"
   actual_sha="${actual_sha%% *}"
   [[ "$actual_sha" == "$recorded_sha" ]] || fail "Sand binary differs from its pinned provenance."
@@ -162,6 +266,77 @@ snapshot_runner_group() {
     fail "could not snapshot runner group repositories before mutation"
 }
 
+require_dedicated_runner_group() {
+  local visibility allows_public is_default inherited network_configuration_id selected_repositories existing_runners hosted_runners
+  [[ "$RUNNER_GROUP_CONFIRM" == "$RUNNER_GROUP" ]] ||
+    fail "set SAND_RUNNER_GROUP_CONFIRM to the exact runner group name before mutating GitHub."
+  visibility="$(jq -r '.visibility // ""' "$GITHUB_SNAPSHOT_DIRECTORY/group.json")"
+  allows_public="$(jq -r '.allows_public_repositories // false' "$GITHUB_SNAPSHOT_DIRECTORY/group.json")"
+  is_default="$(jq -r '.default // false' "$GITHUB_SNAPSHOT_DIRECTORY/group.json")"
+  inherited="$(jq -r '.inherited // false' "$GITHUB_SNAPSHOT_DIRECTORY/group.json")"
+  network_configuration_id="$(jq -r '.network_configuration_id // ""' "$GITHUB_SNAPSHOT_DIRECTORY/group.json")"
+  [[ "$visibility" == "selected" && "$allows_public" == "false" && "$is_default" == "false" && "$inherited" == "false" && -z "$network_configuration_id" ]] ||
+    fail "runner group must be a non-default, selected-only, non-inherited group without a network configuration."
+  selected_repositories="$(jq -r '[.[].repositories[]?.full_name] | sort | join("\n")' "$GITHUB_SNAPSHOT_DIRECTORY/repositories.json")"
+  [[ -z "$selected_repositories" || "$selected_repositories" == "$REPOSITORY" ]] ||
+    fail "runner group is not dedicated to $REPOSITORY; refusing to change its repository allowlist."
+  existing_runners="$(gh api --paginate "/orgs/$ORGANIZATION/actions/runner-groups/$1/runners?per_page=100" --jq '.runners[]?.name')" ||
+    fail "could not inspect existing runners in group $RUNNER_GROUP."
+  [[ -z "$existing_runners" ]] ||
+    fail "runner group $RUNNER_GROUP already has runners; use an empty dedicated group."
+  hosted_runners="$(gh api --paginate "/orgs/$ORGANIZATION/actions/runner-groups/$1/hosted-runners?per_page=100" --jq '.hosted_runners[]?.id')" ||
+    fail "could not inspect hosted runners in group $RUNNER_GROUP."
+  [[ -z "$hosted_runners" ]] ||
+    fail "runner group $RUNNER_GROUP already has hosted runners; use an empty dedicated group."
+}
+
+read_api_etag() {
+  local endpoint="$1" etag
+  etag="$(gh api --include "$endpoint" | awk 'tolower($1) == "etag:" {print $2; exit}')" ||
+    fail "could not read the GitHub resource version for $endpoint."
+  etag="${etag#W/}"
+  [[ -n "$etag" ]] || fail "GitHub did not return a resource version for $endpoint."
+  printf '%s\n' "$etag"
+}
+
+assert_repository_snapshot_unchanged() {
+  local current_repositories expected_repositories repositories_endpoint
+  repositories_endpoint="/orgs/$ORGANIZATION/actions/runner-groups/$GITHUB_MUTATION_GROUP_ID/repositories?per_page=100"
+  current_repositories="$(gh api --paginate --slurp "$repositories_endpoint" | jq -c '[.[].repositories[]?.id] | sort')" ||
+    fail "could not revalidate runner group repositories before mutation."
+  expected_repositories="$(jq -c '[.[].repositories[]?.id] | sort' "$GITHUB_SNAPSHOT_DIRECTORY/repositories.json")" ||
+    fail "could not read the runner group repository snapshot."
+  [[ "$current_repositories" == "$expected_repositories" ]] ||
+    fail "runner group repository membership changed after review; refusing to overwrite it."
+  GITHUB_REPOSITORIES_ETAG="$(read_api_etag "$repositories_endpoint")"
+}
+
+assert_runner_group_snapshot_unchanged() {
+  local current_group expected_group group_endpoint
+  group_endpoint="/orgs/$ORGANIZATION/actions/runner-groups/$GITHUB_MUTATION_GROUP_ID"
+  current_group="$(gh api "$group_endpoint" | jq -c '{name, visibility, allows_public_repositories, default, inherited, network_configuration_id, restricted_to_workflows, selected_workflows: ((.selected_workflows // .workflow_restrictions.workflows // []) | sort)}')" ||
+    fail "could not revalidate runner group before mutation."
+  expected_group="$(jq -c '{name, visibility, allows_public_repositories, default, inherited, network_configuration_id, restricted_to_workflows, selected_workflows: ((.selected_workflows // .workflow_restrictions.workflows // []) | sort)}' "$GITHUB_SNAPSHOT_DIRECTORY/group.json")" ||
+    fail "could not read the runner group snapshot."
+  [[ "$current_group" == "$expected_group" ]] ||
+    fail "runner group settings changed after review; refusing to overwrite them."
+  GITHUB_GROUP_ETAG="$(read_api_etag "$group_endpoint")"
+  assert_repository_snapshot_unchanged
+}
+
+assert_runner_group_configuration() {
+  local group_endpoint current_visibility current_public current_restricted current_workflows expected_workflows
+  group_endpoint="/orgs/$ORGANIZATION/actions/runner-groups/$GITHUB_MUTATION_GROUP_ID"
+  current_visibility="$(gh api "$group_endpoint" --jq '.visibility')" || fail "could not verify runner group visibility after mutation."
+  current_public="$(gh api "$group_endpoint" --jq '.allows_public_repositories // false')" || fail "could not verify runner group public-repository access after mutation."
+  current_restricted="$(gh api "$group_endpoint" --jq '.restricted_to_workflows // .workflow_restrictions.restricted_to_workflows // false')" || fail "could not verify runner group workflow restrictions after mutation."
+  current_workflows="$(gh api "$group_endpoint" --jq '(.selected_workflows // .workflow_restrictions.workflows // []) | sort | join("\n")')" || fail "could not verify runner group workflows after mutation."
+  IFS=',' read -r -a workflow_list <<< "$WORKFLOWS"
+  expected_workflows="$(printf '%s\n' "${workflow_list[@]}" | awk -v repository="$REPOSITORY" -v branch="$BASE_BRANCH" 'BEGIN { first = 1 } { if (!first) printf "\n"; printf "%s/.github/workflows/%s@refs/heads/%s", repository, $0, branch; first = 0 }' | sort)"
+  [[ "$current_visibility" == "selected" && "$current_public" == "false" && "$current_restricted" == "true" && "$current_workflows" == "$expected_workflows" ]] ||
+    fail "runner group configuration did not converge to the requested private workflow allowlist."
+}
+
 restore_runner_group() {
   local snapshot_directory="$1" runner_group_id="$2" group_payload repository_payload
   group_payload="$(jq -c '{
@@ -177,9 +352,21 @@ restore_runner_group() {
   gh api --method PUT "/orgs/$ORGANIZATION/actions/runner-groups/$runner_group_id/repositories" --input - <<< "$repository_payload" --silent || return 1
 }
 
+cleanup_github_configuration() {
+  local status="$?"
+  trap - EXIT INT TERM HUP
+  set +e
+  if [[ "$GITHUB_MUTATION_ACTIVE" == true && -n "$GITHUB_SNAPSHOT_DIRECTORY" && -n "$GITHUB_MUTATION_GROUP_ID" ]]; then
+    restore_runner_group "$GITHUB_SNAPSHOT_DIRECTORY" "$GITHUB_MUTATION_GROUP_ID" ||
+      echo "error: GitHub runner-group rollback failed; inspect the group before enabling workflows." >&2
+  fi
+  cleanup_github_snapshot
+  exit "$status"
+}
+
 configure_github() {
   gh auth status >/dev/null 2>&1 || fail "Authenticate gh with an organization-owner account first."
-  local permissions runner_permission installation_record installation_id installation_selection installation_repositories runner_group_id repository_id selected workflow
+  local permissions runner_permission installation_record installation_id installation_selection installation_repositories runner_group_id repository_id repository_default_branch required_review_count selected workflow
   permissions="$(gh api "/orgs/$ORGANIZATION/installations" --paginate --jq ".installations[] | select(.app_id == $APP_ID) | .permissions.actions // \"none\"")"
   runner_permission="$(gh api "/orgs/$ORGANIZATION/installations" --paginate --jq ".installations[] | select(.app_id == $APP_ID) | .permissions.organization_self_hosted_runners // \"none\"")"
   [[ "$permissions" == "read" ]] || fail "the Sand GitHub App must have Actions: read."
@@ -194,36 +381,59 @@ configure_github() {
   [[ "$runner_group_id" =~ ^[1-9][0-9]*$ ]] || fail "runner group was not found or was ambiguous: $RUNNER_GROUP"
   repository_id="$(gh api "/repos/$REPOSITORY" --jq .id)"
   [[ "$repository_id" =~ ^[1-9][0-9]*$ ]] || fail "repository was not found: $REPOSITORY"
+  repository_default_branch="$(gh api "/repos/$REPOSITORY" --jq .default_branch)"
+  [[ "$BASE_BRANCH" == "$repository_default_branch" ]] ||
+    fail "SAND_BASE_BRANCH must match the repository default branch ($repository_default_branch)."
+  required_review_count="$(gh api "/repos/$REPOSITORY/branches/$BASE_BRANCH/protection" --jq '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null)" ||
+    fail "the repository default branch must have branch protection before configuring a privileged runner."
+  [[ "$required_review_count" =~ ^[1-9][0-9]*$ ]] ||
+    fail "the repository default branch must require at least one pull-request approval before configuring a privileged runner."
   GITHUB_SNAPSHOT_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/mobile-sand-github.XXXXXX")"
-  trap cleanup_github_snapshot EXIT
+  GITHUB_MUTATION_GROUP_ID="$runner_group_id"
+  trap cleanup_github_configuration EXIT INT TERM HUP
   snapshot_runner_group "$GITHUB_SNAPSHOT_DIRECTORY" "$runner_group_id"
+  require_dedicated_runner_group "$runner_group_id"
+  assert_runner_group_snapshot_unchanged
   local patch_args=(
     --method PATCH "/orgs/$ORGANIZATION/actions/runner-groups/$runner_group_id"
+    -H "If-Match: $GITHUB_GROUP_ETAG"
     -f "name=$RUNNER_GROUP" -f visibility=selected -F allows_public_repositories=false
     -F restricted_to_workflows=true
   )
+  GITHUB_MUTATION_ACTIVE=true
   IFS=',' read -r -a workflow_list <<< "$WORKFLOWS"
   for workflow in "${workflow_list[@]}"; do
     patch_args+=( -f "selected_workflows[]=$REPOSITORY/.github/workflows/$workflow@refs/heads/$BASE_BRANCH" )
   done
   if ! gh api "${patch_args[@]}" --silent; then
     restore_runner_group "$GITHUB_SNAPSHOT_DIRECTORY" "$runner_group_id" || fail "runner group update failed and rollback failed"
+    GITHUB_MUTATION_ACTIVE=false
     fail "runner group update failed; the previous group settings were restored"
   fi
-  if ! gh api --method PUT "/orgs/$ORGANIZATION/actions/runner-groups/$runner_group_id/repositories" -F "selected_repository_ids[]=$repository_id" --silent; then
+  assert_repository_snapshot_unchanged
+  if ! gh api --method PUT "/orgs/$ORGANIZATION/actions/runner-groups/$runner_group_id/repositories" -H "If-Match: $GITHUB_REPOSITORIES_ETAG" -F "selected_repository_ids[]=$repository_id" --silent; then
     restore_runner_group "$GITHUB_SNAPSHOT_DIRECTORY" "$runner_group_id" || fail "runner repository restriction failed and rollback failed"
+    GITHUB_MUTATION_ACTIVE=false
     fail "runner repository restriction failed; the previous group settings were restored"
+  fi
+  if ! assert_runner_group_configuration; then
+    restore_runner_group "$GITHUB_SNAPSHOT_DIRECTORY" "$runner_group_id" || fail "runner group convergence failed and rollback failed"
+    GITHUB_MUTATION_ACTIVE=false
+    fail "runner group configuration did not converge; the previous group settings were restored"
   fi
   if ! selected="$(gh api "/orgs/$ORGANIZATION/actions/runner-groups/$runner_group_id/repositories?per_page=100" --paginate --jq '.repositories[].full_name')"; then
     restore_runner_group "$GITHUB_SNAPSHOT_DIRECTORY" "$runner_group_id" || fail "runner group convergence check failed and rollback failed"
+    GITHUB_MUTATION_ACTIVE=false
     fail "runner group convergence check failed; the previous group settings were restored"
   fi
   if [[ "$selected" != "$REPOSITORY" ]]; then
     restore_runner_group "$GITHUB_SNAPSHOT_DIRECTORY" "$runner_group_id" || fail "runner group convergence failed and rollback failed"
+    GITHUB_MUTATION_ACTIVE=false
     fail "runner group repository restriction did not converge; the previous group settings were restored"
   fi
+  GITHUB_MUTATION_ACTIVE=false
   cleanup_github_snapshot
-  trap - EXIT
+  trap - EXIT INT TERM HUP
   echo "Configured restricted runner group $RUNNER_GROUP for $REPOSITORY."
 }
 
@@ -405,6 +615,7 @@ Sand runner plan (read-only)
   runner label:  $RUNNER_LABEL
   GitHub App ID: ${APP_ID:-<set SAND_GITHUB_APP_ID>}
   VM image:      ${VM_IMAGE:-<set SAND_VM_IMAGE with a digest>}
+  Sand source:   $SAND_SOURCE_REPOSITORY
   Sand revision: ${SAND_REVISION:-<set SAND_REVISION>}
   config:        $CONFIG_PATH
   LaunchAgent:   $LAUNCH_AGENT_PATH
@@ -426,6 +637,7 @@ fi
 case "$MODE" in
   plan)
     [[ -z "$APPLY" ]] || fail "plan does not accept a second argument"
+    validate_plan_inputs
     print_plan
     ;;
   render)
@@ -447,6 +659,8 @@ case "$MODE" in
     require_macos_host
     validate_inputs
     require_commands
+    require_tart_version
+    require_softnet_version
     require_key
     require_pinned_sand
     temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/mobile-sand-validate.XXXXXX")"
@@ -464,11 +678,16 @@ case "$MODE" in
     require_macos_host
     validate_inputs
     require_commands
+    require_tart_version
+    require_softnet_version
     require_key
     require_pinned_sand
     config_directory="$(dirname "$CONFIG_PATH")"
     launch_directory="$(dirname "$LAUNCH_AGENT_PATH")"
     mkdir -p "$config_directory" "$launch_directory"
+    require_secure_parent_directory "$CONFIG_PATH"
+    require_secure_parent_directory "$LAUNCH_AGENT_PATH"
+    require_secure_parent_directory "$SAND_BIN"
     chmod 700 "$config_directory"
     config_temporary="$(mktemp "$config_directory/.mobile-runner.yml.XXXXXX")"
     plist_temporary="$(mktemp "$launch_directory/.mobile-runner.plist.XXXXXX")"

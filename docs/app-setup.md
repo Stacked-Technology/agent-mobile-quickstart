@@ -9,7 +9,8 @@ Record these values in the app repository's private setup notes or GitHub variab
 | Value | Example shape | Where it is used |
 | --- | --- | --- |
 | Mobile app directory | `apps/mobile` or `.` | CI working directory |
-| Package manager | `npm`, `yarn`, or `pnpm` | Dependency installation |
+| Package manager | `npm`, Yarn Classic/Berry, or `pnpm` | Dependency installation |
+| Package-manager version/lockfile | e.g. Yarn 1 + `yarn.lock` or Yarn 4 + `yarn.lock` | Exact install flags in CI |
 | Node version | `20` or the version in `.nvmrc` | CI and local development |
 | iOS bundle identifier | `com.example.app` | Apple Developer and App Store Connect |
 | Android application ID | `com.example.app` | Google Play and Android builds |
@@ -83,15 +84,20 @@ Configure the repository before enabling release workflows:
 
 ## 6. First-run validation
 
-Run the following in the app repository after adapting the templates:
+Run the following in the app repository after adapting the templates. Use the command pair for the package manager recorded in the app contract:
 
 ```bash
-# Read-only checks first.
-npm ci
-npm test
-npx expo-doctor  # only for Expo apps
+# npm:  npm ci && npm test
+# Yarn Berry:  yarn install --immutable && yarn test
+# Yarn Classic: yarn install --frozen-lockfile && yarn test
+# pnpm: pnpm install --frozen-lockfile && pnpm test
+# Read-only runner checks.
 bash scripts/setup_sand_github_runner.sh plan
-bash scripts/setup_sand_github_runner.sh validate
+bash scripts/update_sand.sh plan
 ```
+
+Run `npx expo-doctor` only when the app uses Expo. The package-manager commands may install dependencies or execute lifecycle code; the two Sand `plan` commands are the read-only checks.
+
+After a human reviews and applies the pinned Sand build, run `bash scripts/setup_sand_github_runner.sh validate` to verify its provenance, generated configuration, and launch-agent plist.
 
 Then perform one manual simulator smoke test, one manual device/signing smoke test, and one dry-run or test-environment workflow run. Do not enable a production release merely because CI is green.

@@ -1,6 +1,6 @@
 # Mobile agent quickstart
 
-This repository is a reusable, provider-neutral starting point for letting coding agents work on mobile apps safely. It centralizes the operational pieces that are easy to forget:
+This repository is a reusable, app-neutral starting point for letting coding agents work on mobile apps safely. It centralizes the operational pieces that are easy to forget:
 
 - a private TestFlight feedback workflow with local-only artifacts;
 - a generic Apple Silicon Sand/VM runner setup for GitHub Actions;
@@ -8,7 +8,7 @@ This repository is a reusable, provider-neutral starting point for letting codin
 - app, signing, App Store Connect, GitHub, and CI setup checklists; and
 - a small agent playbook for recording durable, non-secret mobile knowledge.
 
-It intentionally does not contain an app, credentials, tester identities, bundle IDs, organization names, or production deployment policy. Copy the templates into an app repository and fill in the placeholders there.
+It intentionally does not contain an app, credentials, tester identities, bundle IDs, organization settings, or production deployment policy. It references the maintained public Sand source as a pinned build dependency; copy the templates into an app repository and fill in the app-specific placeholders there.
 
 ## Start here
 
@@ -23,6 +23,7 @@ It intentionally does not contain an app, credentials, tester identities, bundle
 | Path | Purpose |
 | --- | --- |
 | `.codex/skills/testflight-feedback/` | Agent skill, deterministic helper, and local-only configuration examples |
+| `scripts/update_sand.sh` | Fetch and build the pinned public Sand fork revision, with an override for another fork |
 | `scripts/setup_sand_github_runner.sh` | Plan, validate, and explicitly apply the Sand/VM runner configuration |
 | `scripts/setup_macos_actions_runner.sh` | Optional non-VM Apple Silicon runner bootstrap |
 | `scripts/init_testflight_feedback.sh` | Create ignored local TestFlight configuration placeholders |
