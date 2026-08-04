@@ -1,0 +1,4 @@
+interface:
+  display_name: "TestFlight Feedback"
+  short_description: "Safely triage private TestFlight feedback"
+  default_prompt: "Use $testflight-feedback to fetch and safely triage private TestFlight feedback for this mobile app."

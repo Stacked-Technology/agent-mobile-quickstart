@@ -1,0 +1,35 @@
+name: Mobile TestFlight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main' && vars.MOBILE_SANDBOX_ENABLED == 'true' && vars.TESTFLIGHT_RELEASE_ENABLED == 'true'
+    runs-on: [self-hosted, macOS, ARM64, mobile-sandbox]
+    environment: testflight
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ vars.MOBILE_NODE_VERSION || '20' }}
+          cache: npm
+          cache-dependency-path: ${{ vars.MOBILE_APP_DIR || '.' }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ vars.MOBILE_APP_DIR || '.' }}
+        run: npm ci
+
+      # Replace this command with the app's reviewed release lane. Examples
+      # include `bundle exec fastlane ios beta`, `eas build`, or an Xcode
+      # archive/export script. Keep signing material in protected storage.
+      - name: Build and upload to TestFlight
+        working-directory: ${{ vars.MOBILE_APP_DIR || '.' }}
+        run: ./scripts/release-testflight.sh
+# End of template.

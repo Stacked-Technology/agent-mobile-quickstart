@@ -1,0 +1,41 @@
+name: Mobile CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: vars.MOBILE_SANDBOX_ENABLED == 'true'
+    runs-on: [self-hosted, macOS, ARM64, mobile-sandbox]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ vars.MOBILE_NODE_VERSION || '20' }}
+          cache: npm
+          cache-dependency-path: ${{ vars.MOBILE_APP_DIR || '.' }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ vars.MOBILE_APP_DIR || '.' }}
+        run: npm ci
+
+      - name: Run lint
+        working-directory: ${{ vars.MOBILE_APP_DIR || '.' }}
+        run: npm run lint
+
+      - name: Run tests
+        working-directory: ${{ vars.MOBILE_APP_DIR || '.' }}
+        run: npm test
+
+      # This template uses npm. Adapt the install/cache/check commands together
+      # when the app uses Yarn, pnpm, or another package manager.
+      # End of template.

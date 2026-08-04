@@ -1,0 +1,31 @@
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+
+# Private feedback, screenshots, receipts, and other local artifacts.
+tmp/
+
+# Local TestFlight configuration. The opaque handled ledger is intentionally
+# tracked; settings, tester eligibility, and the app-specific baseline remain local.
+.codex/skills/testflight-feedback/config/settings.json
+.codex/skills/testflight-feedback/config/allowed-emails.json
+.codex/skills/testflight-feedback/config/baseline.json
+.codex/skills/testflight-feedback/config/.handled-feedback.lock
+
+# Local runner state and credentials.
+.actions-runner/
+.sand/
+*.pem
+*.p8
+*.p12
+*.mobileprovision
+
+# Common local build output.
+node_modules/
+Pods/
+DerivedData/
+build/
+dist/
