@@ -27,6 +27,22 @@ asc auth status --profile "<READ_PROFILE>" --validate
 
 Do not paste the resulting token or key into a terminal transcript, issue, pull request, agent prompt, or repository file. If a command prints a credential, stop and rotate it before continuing.
 
+## Where values come from
+
+Use these sources when filling the placeholders in the README and runner scripts. The values themselves belong in a private shell profile, the operating system credential store, or GitHub's protected settings—not in this repository.
+
+| Value | Where to obtain or choose it |
+| --- | --- |
+| GitHub organization, repository, and protected default branch | The app repository URL and its GitHub repository settings. The branch must be the protected default branch described in [app setup](app-setup.md#5-github-setup). |
+| GitHub App ID | The numeric App ID shown in the GitHub App's settings under the owning organization. Install that app in the organization with the permissions described in [Sand runner setup](sand-runner.md#configure-the-operator-environment). |
+| GitHub App private-key path | Create/download the App's private key through GitHub App administration, save it as a local regular file, and set the environment variable to its path. The key itself must never enter Git. |
+| Sand VM image digest | Select an approved macOS image with the Tart Guest Agent and record its immutable `@sha256:` reference. The required image and host checks are in [Sand runner prerequisites](sand-runner.md#prerequisites). |
+| Runner group, confirmation, name, and label | Create or select an empty dedicated group in the organization's Actions settings. Choose a unique runner name and make the label match the workflow `runs-on` label; review [Sand runner setup](sand-runner.md#configure-the-operator-environment). |
+| TestFlight app ID | The numeric App Store Connect app ID from the app record—not the bundle identifier. See the [TestFlight configuration contract](../.codex/skills/testflight-feedback/references/configuration.md#settingsjson). |
+| TestFlight profile names | Names created through the approved `asc` CLI authentication flow. Keep read and write profiles separate; see [TestFlight auth profiles](testflight-feedback.md#auth-profiles). |
+| Ordinary runner registration token | A short-lived token from the repository or organization Actions runner settings, used only for the one fallback-runner invocation. |
+| Fallback runner version and archive SHA-256 | Pin a release from the official GitHub Actions runner releases and independently verify the ARM64 archive digest before using the fallback script. |
+
 ## GitHub variables and secrets
 
 Use variables for non-secret settings, for example:
@@ -35,7 +51,8 @@ Use variables for non-secret settings, for example:
 - `MOBILE_NODE_VERSION`
 - `MOBILE_SANDBOX_ENABLED`
 - `TESTFLIGHT_RELEASE_ENABLED`
-- `SAND_RUNNER_GROUP`
+
+`SAND_RUNNER_GROUP` is a local setup variable consumed by the Sand scripts, not a GitHub Actions variable; see the [README environment setup](../README.md#configure-environment-variables).
 
 Use protected secrets or a secret manager for values that cannot be derived from the repository, for example:
 
