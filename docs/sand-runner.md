@@ -31,7 +31,7 @@ The validation script checks Tart's minimum version directly. It reads Homebrew'
 
 ## Sand source
 
-The quickstart defaults to the maintained public Sand fork at [`Stacked-Technology/sand`](https://github.com/Stacked-Technology/sand), pinned to commit [`74e03ba`](https://github.com/Stacked-Technology/sand/commit/74e03ba4c76fc2b741b89fcfccf4f1f6cbcd1b9f). The update script fetches and builds that exact commit, then records the installed binary digest. Override `SAND_SOURCE_REPOSITORY` and `SAND_REVISION` together when using another public fork; never build from an unpinned working tree.
+The quickstart defaults to the maintained public Sand fork at [`Stacked-Technology/sand`](https://github.com/Stacked-Technology/sand), pinned to commit [`c1632d9`](https://github.com/Stacked-Technology/sand/commit/c1632d93ce0b63ae52cc28a03d31eaff4b2c82fa). The update script fetches and builds that exact commit, then records the installed binary digest. Override `SAND_SOURCE_REPOSITORY` and `SAND_REVISION` together when using another public fork; never build from an unpinned working tree.
 
 ## Configure the operator environment
 
@@ -47,7 +47,7 @@ export SAND_GITHUB_APP_ID='<APP_ID>'
 export SAND_GITHUB_APP_KEY_PATH="$HOME/.config/sand/github-app.pem"
 export SAND_VM_IMAGE='ghcr.io/<OWNER>/<IMAGE>@sha256:<DIGEST>'
 export SAND_SOURCE_REPOSITORY='https://github.com/Stacked-Technology/sand.git'
-export SAND_REVISION='74e03ba4c76fc2b741b89fcfccf4f1f6cbcd1b9f'
+export SAND_REVISION='c1632d93ce0b63ae52cc28a03d31eaff4b2c82fa'
 export SAND_SOURCE_DIR="$HOME/Github/sand"
 export SAND_INSTALL_PATH="$HOME/.local/bin/sand"
 export SAND_RUNNER_GROUP='mobile-sandbox'
