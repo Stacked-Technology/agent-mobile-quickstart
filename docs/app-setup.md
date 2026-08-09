@@ -79,7 +79,7 @@ Configure the repository before enabling release workflows:
 - set repository variables for non-secret app settings and runner enablement;
 - set protected environment approvals for TestFlight or production release jobs;
 - install the GitHub App used by Sand with only the permissions described in [sand-runner.md](sand-runner.md);
-- restrict the runner group to the intended repository and workflow paths; and
+- use the organization-wide private-only runner group by default, or restrict the runner group to the intended repository and workflow paths when selected scope is chosen; and
 - keep the workflow templates disabled until the runner has passed its read-only validation.
 
 ## 6. First-run validation

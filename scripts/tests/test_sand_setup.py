@@ -11,7 +11,7 @@ from pathlib import Path
 SCRIPT = Path(__file__).parents[1] / "update_sand.sh"
 RUNNER_SCRIPT = SCRIPT.parent / "setup_sand_github_runner.sh"
 PUBLIC_FORK = "https://github.com/Stacked-Technology/sand.git"
-PINNED_REVISION = "7e952d121a706626e8927d0ba05195a3802961f2"
+PINNED_REVISION = "74e03ba4c76fc2b741b89fcfccf4f1f6cbcd1b9f"
 
 
 def clean_environment():
@@ -112,6 +112,31 @@ class SandSetupScriptTests(unittest.TestCase):
         self.assertIn(PUBLIC_FORK, result.stdout)
         self.assertIn(PINNED_REVISION, result.stdout)
 
+    def test_runner_plan_defaults_to_organization_scope(self):
+        result = subprocess.run(
+            ["bash", str(RUNNER_SCRIPT), "plan"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=clean_environment(),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("scope:         organization", result.stdout)
+        self.assertIn("automatic organization discovery", result.stdout)
+
+    def test_runner_plan_accepts_organization_exclusions(self):
+        environment = clean_environment()
+        environment["SAND_EXCLUDE_REPOSITORIES"] = "archived-app,legacy-app"
+        result = subprocess.run(
+            ["bash", str(RUNNER_SCRIPT), "plan"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("exclusions:    archived-app,legacy-app", result.stdout)
+
     def test_runner_setup_accepts_a_different_pinned_public_fork(self):
         environment = clean_environment()
         environment.update(
@@ -148,6 +173,7 @@ class SandSetupScriptTests(unittest.TestCase):
         environment = clean_environment()
         environment.update(
             {
+                "SAND_REPOSITORY_SCOPE": "selected",
                 "SAND_GITHUB_ORGANIZATION": "example-org",
                 "SAND_GITHUB_REPOSITORY": "other-org/example-app",
             }
@@ -162,12 +188,56 @@ class SandSetupScriptTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("repository owner", result.stderr)
 
+    def test_runner_plan_rejects_repository_with_organization_scope(self):
+        environment = clean_environment()
+        environment.update(
+            {
+                "SAND_GITHUB_ORGANIZATION": "example-org",
+                "SAND_GITHUB_REPOSITORY": "example-org/example-app",
+            }
+        )
+        result = subprocess.run(
+            ["bash", str(RUNNER_SCRIPT), "plan"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires SAND_REPOSITORY_SCOPE=selected", result.stderr)
+
     def test_runner_render_is_read_only_and_uses_app_placeholders(self):
         if platform.system() != "Darwin" or platform.machine() != "arm64" or os.geteuid() == 0:
             self.skipTest("Sand rendering is macOS Apple Silicon only")
         environment = clean_environment()
         environment.update(
             {
+                "SAND_GITHUB_ORGANIZATION": "example-org",
+                "SAND_GITHUB_APP_ID": "12345",
+                "SAND_VM_IMAGE": f"ghcr.io/example/image@sha256:{'0' * 64}",
+                "SAND_RUNNER_NAME": "mobile-sandbox-host-01",
+            }
+        )
+        result = subprocess.run(
+            ["bash", str(RUNNER_SCRIPT), "render"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("organization: example-org", result.stdout)
+        self.assertIn("repositoryScope: organization", result.stdout)
+        self.assertIn("runnerGroup: mobile-sandbox", result.stdout)
+        self.assertIn("softnetBlock: \"@host\"", result.stdout)
+
+    def test_runner_selected_scope_render_uses_repository_allowlist(self):
+        if platform.system() != "Darwin" or platform.machine() != "arm64" or os.geteuid() == 0:
+            self.skipTest("Sand rendering is macOS Apple Silicon only")
+        environment = clean_environment()
+        environment.update(
+            {
+                "SAND_REPOSITORY_SCOPE": "selected",
                 "SAND_GITHUB_ORGANIZATION": "example-org",
                 "SAND_GITHUB_REPOSITORY": "example-org/example-app",
                 "SAND_GITHUB_APP_ID": "12345",
@@ -183,9 +253,8 @@ class SandSetupScriptTests(unittest.TestCase):
             env=environment,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("organization: example-org", result.stdout)
-        self.assertIn("runnerGroup: mobile-sandbox", result.stdout)
-        self.assertIn("softnetBlock: \"@host\"", result.stdout)
+        self.assertIn("repositoryScope: selected", result.stdout)
+        self.assertIn("        - example-app", result.stdout)
 
     def test_runner_validate_checks_hermetic_binary_provenance(self):
         if platform.system() != "Darwin" or platform.machine() != "arm64" or os.geteuid() == 0:
@@ -211,7 +280,6 @@ class SandSetupScriptTests(unittest.TestCase):
             environment.update(
                 {
                     "SAND_GITHUB_ORGANIZATION": "example-org",
-                    "SAND_GITHUB_REPOSITORY": "example-org/example-app",
                     "SAND_GITHUB_APP_ID": "12345",
                     "SAND_GITHUB_APP_KEY_PATH": str(key),
                     "SAND_VM_IMAGE": f"ghcr.io/example/image@sha256:{'0' * 64}",
