@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly DEFAULT_SAND_SOURCE_REPOSITORY="https://github.com/Stacked-Technology/sand.git"
-readonly DEFAULT_SAND_REVISION="7e952d121a706626e8927d0ba05195a3802961f2"
+readonly DEFAULT_SAND_REVISION="c1632d93ce0b63ae52cc28a03d31eaff4b2c82fa"
 readonly DEFAULT_SAND_SOURCE_DIR="$HOME/Github/sand"
 readonly DEFAULT_SAND_INSTALL_PATH="$HOME/.local/bin/sand"
 

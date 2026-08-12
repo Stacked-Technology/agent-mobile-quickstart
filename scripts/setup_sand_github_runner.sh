@@ -3,8 +3,9 @@ set -euo pipefail
 
 readonly DEFAULT_RUNNER_GROUP="mobile-sandbox"
 readonly DEFAULT_RUNNER_LABEL="mobile-sandbox"
+readonly DEFAULT_REPOSITORY_SCOPE="organization"
 readonly DEFAULT_SAND_SOURCE_REPOSITORY="https://github.com/Stacked-Technology/sand.git"
-readonly DEFAULT_SAND_REVISION="7e952d121a706626e8927d0ba05195a3802961f2"
+readonly DEFAULT_SAND_REVISION="c1632d93ce0b63ae52cc28a03d31eaff4b2c82fa"
 readonly DEFAULT_CONFIG_PATH="$HOME/.config/sand/mobile-runner.yml"
 readonly DEFAULT_LAUNCH_AGENT_PATH="$HOME/Library/LaunchAgents/com.local.sand.mobile-runner.plist"
 readonly DEFAULT_LAUNCH_AGENT_LABEL="com.local.sand.mobile-runner"
@@ -17,6 +18,8 @@ MODE="${1:-plan}"
 APPLY="${2:-}"
 ORGANIZATION="${SAND_GITHUB_ORGANIZATION:-}"
 REPOSITORY="${SAND_GITHUB_REPOSITORY:-}"
+REPOSITORY_SCOPE="${SAND_REPOSITORY_SCOPE:-$DEFAULT_REPOSITORY_SCOPE}"
+EXCLUDE_REPOSITORIES="${SAND_EXCLUDE_REPOSITORIES:-}"
 APP_ID="${SAND_GITHUB_APP_ID:-}"
 KEY_PATH="${SAND_GITHUB_APP_KEY_PATH:-$HOME/.config/sand/github-app.pem}"
 VM_IMAGE="${SAND_VM_IMAGE:-}"
@@ -60,12 +63,14 @@ Read-only commands are the default. GitHub and launch-agent mutations require
 the literal second argument --apply.
 
 Required environment for validate/configure/install:
-  SAND_GITHUB_ORGANIZATION  SAND_GITHUB_REPOSITORY  SAND_GITHUB_APP_ID
-  SAND_VM_IMAGE
+  SAND_GITHUB_ORGANIZATION  SAND_GITHUB_APP_ID  SAND_VM_IMAGE
+  SAND_GITHUB_REPOSITORY is additionally required for selected scope.
 
 Useful overrides:
-  SAND_GITHUB_APP_KEY_PATH  SAND_REVISION           SAND_RUNNER_GROUP
-  SAND_SOURCE_REPOSITORY    SAND_INSTALL_PATH       SAND_RUNNER_LABEL
+  SAND_REPOSITORY_SCOPE     SAND_EXCLUDE_REPOSITORIES
+  SAND_GITHUB_REPOSITORY    SAND_GITHUB_APP_KEY_PATH SAND_REVISION
+  SAND_RUNNER_GROUP         SAND_SOURCE_REPOSITORY   SAND_INSTALL_PATH
+  SAND_RUNNER_LABEL
   SAND_RUNNER_GROUP_CONFIRM
   SAND_RUNNER_NAME          SAND_BASE_BRANCH        SAND_ALLOWED_WORKFLOWS
   SAND_VM_RAM_GB            SAND_VM_CPU_CORES       SAND_POOL_MIN
@@ -104,7 +109,7 @@ validate_source_overrides() {
 }
 
 validate_plan_inputs() {
-  local repository_owner
+  local repository_owner excluded_repository
   validate_source_overrides
   [[ "$SAND_SOURCE_REPOSITORY" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\.git)?$ ]] ||
     fail "SAND_SOURCE_REPOSITORY must be an HTTPS GitHub repository URL."
@@ -112,11 +117,27 @@ validate_plan_inputs() {
     fail "SAND_REVISION must be a full lowercase commit SHA."
   [[ -z "$SAND_INSTALL_PATH" || "$SAND_INSTALL_PATH" == "$SAND_BIN" ]] ||
     fail "SAND_INSTALL_PATH and SAND_BIN must refer to the same path."
+  [[ "$REPOSITORY_SCOPE" == "organization" || "$REPOSITORY_SCOPE" == "selected" ]] ||
+    fail "SAND_REPOSITORY_SCOPE must be organization or selected."
+  if [[ "$REPOSITORY_SCOPE" == "organization" && -n "$REPOSITORY" ]]; then
+    fail "SAND_GITHUB_REPOSITORY requires SAND_REPOSITORY_SCOPE=selected."
+  fi
   if [[ -n "$ORGANIZATION" || -n "$REPOSITORY" ]]; then
     [[ "$ORGANIZATION" =~ ^[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_ORGANIZATION is invalid."
-    [[ "$REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_REPOSITORY must have the form OWNER/REPOSITORY."
-    repository_owner="$(printf '%s\n' "$REPOSITORY" | cut -d/ -f1)"
-    [[ "$repository_owner" == "$ORGANIZATION" ]] || fail "repository owner must match SAND_GITHUB_ORGANIZATION."
+    if [[ -n "$REPOSITORY" ]]; then
+      [[ "$REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_REPOSITORY must have the form OWNER/REPOSITORY."
+      repository_owner="$(printf '%s\n' "$REPOSITORY" | cut -d/ -f1)"
+      [[ "$repository_owner" == "$ORGANIZATION" ]] || fail "repository owner must match SAND_GITHUB_ORGANIZATION."
+    fi
+  fi
+  if [[ -n "$EXCLUDE_REPOSITORIES" ]]; then
+    [[ "$REPOSITORY_SCOPE" == "organization" ]] ||
+      fail "SAND_EXCLUDE_REPOSITORIES requires SAND_REPOSITORY_SCOPE=organization."
+    IFS=',' read -r -a excluded_repository_list <<< "$EXCLUDE_REPOSITORIES"
+    for excluded_repository in "${excluded_repository_list[@]}"; do
+      [[ "$excluded_repository" =~ ^[A-Za-z0-9._-]+$ ]] ||
+        fail "SAND_EXCLUDE_REPOSITORIES must be a comma-separated list of repository names."
+    done
   fi
   if [[ -n "$APP_ID" ]]; then
     positive_integer SAND_GITHUB_APP_ID "$APP_ID"
@@ -133,8 +154,10 @@ validate_inputs() {
   local path_value workflow
   validate_plan_inputs
   [[ "$ORGANIZATION" =~ ^[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_ORGANIZATION is missing or invalid."
-  [[ "$REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_REPOSITORY must have the form OWNER/REPOSITORY."
-  [[ "${REPOSITORY%%/*}" == "$ORGANIZATION" ]] || fail "repository owner must match SAND_GITHUB_ORGANIZATION."
+  if [[ "$REPOSITORY_SCOPE" == "selected" ]]; then
+    [[ "$REPOSITORY" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || fail "SAND_GITHUB_REPOSITORY must have the form OWNER/REPOSITORY for selected scope."
+    [[ "${REPOSITORY%%/*}" == "$ORGANIZATION" ]] || fail "repository owner must match SAND_GITHUB_ORGANIZATION."
+  fi
   positive_integer SAND_GITHUB_APP_ID "$APP_ID"
   positive_integer SAND_VM_RAM_GB "$VM_RAM_GB"
   positive_integer SAND_VM_CPU_CORES "$VM_CPU_CORES"
@@ -364,8 +387,40 @@ cleanup_github_configuration() {
   exit "$status"
 }
 
+configure_organization_github() {
+  local permissions runner_permission installation_record installation_id installation_selection runner_group_id group_payload
+  permissions="$(gh api "/orgs/$ORGANIZATION/installations" --paginate --jq ".installations[] | select(.app_id == $APP_ID) | .permissions.actions // \"none\"")"
+  runner_permission="$(gh api "/orgs/$ORGANIZATION/installations" --paginate --jq ".installations[] | select(.app_id == $APP_ID) | .permissions.organization_self_hosted_runners // \"none\"")"
+  [[ "$permissions" == "read" ]] || fail "the Sand GitHub App must have Actions: read."
+  [[ "$runner_permission" == "write" ]] || fail "the Sand GitHub App must have organization self-hosted runners: write."
+  installation_record="$(gh api "/orgs/$ORGANIZATION/installations" --paginate --jq ".installations[] | select(.app_id == $APP_ID) | [.id, .repository_selection] | @tsv")"
+  [[ "$(printf '%s\n' "$installation_record" | wc -l | tr -d '[:space:]')" == "1" ]] || fail "the Sand GitHub App installation was not found or was ambiguous."
+  IFS=$'\t' read -r installation_id installation_selection <<< "$installation_record"
+  [[ "$installation_id" =~ ^[1-9][0-9]*$ && "$installation_selection" == "all" ]] ||
+    fail "organization repository scope requires the Sand GitHub App installation to use all-repository scope. Use SAND_REPOSITORY_SCOPE=selected for a selected installation."
+  runner_group_id="$(gh api "/orgs/$ORGANIZATION/actions/runner-groups?per_page=100" --paginate --jq ".runner_groups[] | select(.name == \"$RUNNER_GROUP\") | .id")"
+  [[ "$runner_group_id" =~ ^[1-9][0-9]*$ ]] || fail "runner group was not found or was ambiguous: $RUNNER_GROUP"
+  group_payload="$(gh api "/orgs/$ORGANIZATION/actions/runner-groups/$runner_group_id")"
+  [[ "$(jq -r '.visibility // ""' <<< "$group_payload")" == "all" ]] ||
+    fail "organization repository scope requires runner group $RUNNER_GROUP to have visibility=all."
+  [[ "$(jq -r '.allows_public_repositories // false' <<< "$group_payload")" == "false" ]] ||
+    fail "runner group $RUNNER_GROUP must not allow public repositories."
+  [[ "$(jq -r '.default // false' <<< "$group_payload")" == "false" ]] ||
+    fail "runner group $RUNNER_GROUP must not be the organization default group."
+  [[ "$(jq -r '.inherited // false' <<< "$group_payload")" == "false" ]] ||
+    fail "runner group $RUNNER_GROUP must not be inherited."
+  [[ "$(jq -r '.restricted_to_workflows // .workflow_restrictions.restricted_to_workflows // false' <<< "$group_payload")" == "false" ]] ||
+    fail "runner group $RUNNER_GROUP must not be restricted to a workflow allowlist in organization scope."
+  echo "Verified organization-wide Sand access through GitHub App $APP_ID and runner group $RUNNER_GROUP."
+  echo "The group remains private-only; no GitHub runner-group mutation was needed."
+}
+
 configure_github() {
   gh auth status >/dev/null 2>&1 || fail "Authenticate gh with an organization-owner account first."
+  if [[ "$REPOSITORY_SCOPE" == "organization" ]]; then
+    configure_organization_github
+    return
+  fi
   local permissions runner_permission installation_record installation_id installation_selection installation_repositories runner_group_id repository_id repository_default_branch required_review_count selected workflow
   permissions="$(gh api "/orgs/$ORGANIZATION/installations" --paginate --jq ".installations[] | select(.app_id == $APP_ID) | .permissions.actions // \"none\"")"
   runner_permission="$(gh api "/orgs/$ORGANIZATION/installations" --paginate --jq ".installations[] | select(.app_id == $APP_ID) | .permissions.organization_self_hosted_runners // \"none\"")"
@@ -437,6 +492,24 @@ configure_github() {
   echo "Configured restricted runner group $RUNNER_GROUP for $REPOSITORY."
 }
 
+render_pool_scope() {
+  local repository
+  if [[ "$REPOSITORY_SCOPE" == "organization" ]]; then
+    printf '      repositoryScope: organization\n'
+    if [[ -n "$EXCLUDE_REPOSITORIES" ]]; then
+      printf '      excludeRepositories:\n'
+      IFS=',' read -r -a excluded_repository_list <<< "$EXCLUDE_REPOSITORIES"
+      for repository in "${excluded_repository_list[@]}"; do
+        printf '        - %s\n' "$repository"
+      done
+    fi
+  else
+    printf '      repositoryScope: selected\n'
+    printf '      repositories:\n'
+    printf '        - %s\n' "${REPOSITORY#*/}"
+  fi
+}
+
 render_config() {
   cat <<EOF
 runners:
@@ -475,8 +548,7 @@ runners:
       min: $POOL_MIN
       max: $POOL_MAX
       pollInterval: $POOL_POLL_INTERVAL
-      repositories:
-        - ${REPOSITORY#*/}
+$(render_pool_scope)
       matchLabels:
         - $RUNNER_LABEL
     healthCheck:
@@ -609,7 +681,9 @@ cleanup_install() {
 print_plan() {
   cat <<EOF
 Sand runner plan (read-only)
-  repository:    ${REPOSITORY:-<set SAND_GITHUB_REPOSITORY>}
+  scope:         $REPOSITORY_SCOPE
+  repository:    ${REPOSITORY:-<automatic organization discovery>}
+  exclusions:    ${EXCLUDE_REPOSITORIES:-<none>}
   organization:  ${ORGANIZATION:-<set SAND_GITHUB_ORGANIZATION>}
   runner group:  $RUNNER_GROUP
   runner label:  $RUNNER_LABEL

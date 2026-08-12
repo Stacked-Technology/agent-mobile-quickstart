@@ -3,7 +3,7 @@
 This repository is a reusable, app-neutral starting point for letting coding agents work on mobile apps safely. It centralizes the operational pieces that are easy to forget:
 
 - a private TestFlight feedback workflow with local-only artifacts;
-- a generic Apple Silicon Sand/VM runner setup for GitHub Actions;
+- a generic Apple Silicon Sand/VM runner setup for GitHub Actions, with organization-wide repository discovery by default;
 - an optional plain macOS self-hosted runner fallback;
 - app, signing, App Store Connect, GitHub, and CI setup checklists; and
 - a small agent playbook for recording durable, non-secret mobile knowledge.
@@ -26,12 +26,16 @@ For a local Sand setup, start with this placeholder-only profile:
 
 ```bash
 export SAND_GITHUB_ORGANIZATION='<ORG>'
-export SAND_GITHUB_REPOSITORY='<ORG>/<REPOSITORY>'
+export SAND_REPOSITORY_SCOPE='organization'
+# Required only when SAND_REPOSITORY_SCOPE='selected'.
+# export SAND_GITHUB_REPOSITORY='<ORG>/<REPOSITORY>'
+export SAND_EXCLUDE_REPOSITORIES='archived-app,legacy-app'
 export SAND_GITHUB_APP_ID='<APP_ID>'
 export SAND_GITHUB_APP_KEY_PATH="$HOME/.config/sand/github-app.pem"
 export SAND_VM_IMAGE='ghcr.io/<OWNER>/<IMAGE>@sha256:<DIGEST>'
 export SAND_RUNNER_GROUP='mobile-sandbox'
-export SAND_RUNNER_GROUP_CONFIRM='mobile-sandbox'
+# Required only for selected-scope runner-group mutation.
+# export SAND_RUNNER_GROUP_CONFIRM='mobile-sandbox'
 export SAND_RUNNER_LABEL='mobile-sandbox'
 export SAND_RUNNER_NAME='mobile-sandbox-host-01'
 export SAND_BASE_BRANCH='main'
@@ -45,12 +49,14 @@ The [authentication and secrets guide](docs/auth-and-secrets.md#where-values-com
 | Variable | Required for | Where to obtain or choose it |
 | --- | --- | --- |
 | `SAND_GITHUB_ORGANIZATION` | Sand validation/configuration | The organization that owns the app repository and runner group; see [GitHub setup](docs/app-setup.md#5-github-setup). |
-| `SAND_GITHUB_REPOSITORY` | Sand validation/configuration | The app repository as `OWNER/REPOSITORY`; see [GitHub setup](docs/app-setup.md#5-github-setup). |
+| `SAND_REPOSITORY_SCOPE` | Sand configuration | `organization` (default) discovers every repository available to the installed App; `selected` uses `SAND_GITHUB_REPOSITORY`. |
+| `SAND_GITHUB_REPOSITORY` | Selected-scope Sand configuration | The repository as `OWNER/REPOSITORY`; required only when `SAND_REPOSITORY_SCOPE=selected`. |
+| `SAND_EXCLUDE_REPOSITORIES` | Organization-scope Sand configuration | Optional comma-separated repository names to omit from automatic discovery. |
 | `SAND_GITHUB_APP_ID` | Sand GitHub configuration | The numeric ID in the GitHub App settings; see [where values come from](docs/auth-and-secrets.md#where-values-come-from). |
 | `SAND_GITHUB_APP_KEY_PATH` | Sand validation/configuration | A local path to the GitHub App private key; create it through GitHub App administration and follow the [key handling rules](docs/auth-and-secrets.md#runner-specific-rules). |
 | `SAND_VM_IMAGE` | Sand validation/install | An approved macOS VM image with a Tart Guest Agent and an immutable digest; see [Sand prerequisites](docs/sand-runner.md#prerequisites). |
-| `SAND_RUNNER_GROUP` | Sand configuration | An empty, dedicated organization Actions runner group; see [runner-group setup](docs/sand-runner.md#configure-the-operator-environment). |
-| `SAND_RUNNER_GROUP_CONFIRM` | `configure-github --apply` | Repeat `SAND_RUNNER_GROUP` exactly as an explicit mutation confirmation; see [runner-group safety](docs/sand-runner.md#configure-the-operator-environment). |
+| `SAND_RUNNER_GROUP` | Sand configuration | An existing private-only organization runner group for organization scope, or an empty dedicated selected-scope group; see [runner-group setup](docs/sand-runner.md#configure-the-operator-environment). |
+| `SAND_RUNNER_GROUP_CONFIRM` | Selected-scope `configure-github --apply` | Repeat `SAND_RUNNER_GROUP` exactly before the script mutates a selected runner-group allowlist. It is not used for organization-scope verification. |
 | `SAND_RUNNER_NAME` | Sand validation/install | A unique name for this host's ephemeral runner; choose it locally and see [runner setup](docs/sand-runner.md#configure-the-operator-environment). |
 | `SAND_RUNNER_LABEL` | Sand config/workflows | A narrow label that matches the app workflow's `runs-on`; see [workflow labels](docs/sand-runner.md#workflow-labels). |
 | `SAND_BASE_BRANCH` | Sand GitHub configuration | The protected default branch of the app repository; see [GitHub setup](docs/app-setup.md#5-github-setup). |
@@ -91,7 +97,7 @@ These are repository or environment variables—not shell exports. Set them in G
 | `MOBILE_SANDBOX_ENABLED` | Set to `true` only after [Sand validation](docs/sand-runner.md#read-only-first) and runner testing. |
 | `TESTFLIGHT_RELEASE_ENABLED` | Set to `true` only after the release lane, signing, and protected TestFlight environment are reviewed; see [Apple setup](docs/app-setup.md#4-apple-setup). |
 
-`SAND_RUNNER_GROUP` is a local setup variable, not a GitHub Actions variable. The copied workflow templates use the `mobile-sandbox` runner label in `runs-on`; if you choose a different label, update the templates and `SAND_RUNNER_LABEL` together. The group name and label are related but configured separately in the [Sand runner setup](docs/sand-runner.md#configure-the-operator-environment).
+`SAND_RUNNER_GROUP` is a local setup variable, not a GitHub Actions variable. The copied workflow templates use the `mobile-sandbox` runner label in `runs-on`; if you choose a different label, update the templates and `SAND_RUNNER_LABEL` together. The group name and label are related but configured separately in the [Sand runner setup](docs/sand-runner.md#configure-the-operator-environment). Organization scope requires the GitHub App installation to use all-repository access and the runner group to allow all private repositories while keeping public repositories disabled.
 
 ### Optional non-VM fallback variables
 
